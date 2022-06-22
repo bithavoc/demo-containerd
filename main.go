@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path"
 	"syscall"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 func main() {
@@ -75,6 +78,9 @@ func redisExample() error {
 		log.Printf("deleting container")
 		client.ContainerService().Delete(ctx, containerName)
 	}
+
+	mounts := getOSMounts()
+
 	snapshooter := ""
 	snapshotName := containerName + "-snapshot"
 	client.SnapshotService(snapshooter).Remove(ctx, snapshotName)
@@ -86,8 +92,9 @@ func redisExample() error {
 		containerd.WithNewSnapshot(snapshotName, image),
 		containerd.WithNewSpec(
 			oci.WithImageConfig(image),
-			oci.WithMemoryLimit(((1024*1024)*4)),
-			oci.WithProcessArgs("sh", "-c", "apt update"),
+			oci.WithMounts(mounts),
+			oci.WithMemoryLimit(((1024*1024)*80)),
+			oci.WithProcessArgs("sh", "-c", "apt update && apt-get dist-upgrade -y"),
 		),
 	)
 	if err != nil {
@@ -133,7 +140,8 @@ func redisExample() error {
 
 	go func() {
 		// sleep for a lil bit to see the logs
-		time.Sleep(3 * time.Second)
+		time.Sleep(10 * time.Second)
+		log.Printf("killing process")
 
 		// kill the process and get the exit status
 		if err := task.Kill(ctx, syscall.SIGTERM); err != nil {
@@ -151,4 +159,34 @@ func redisExample() error {
 	fmt.Printf("redis-server exited with status: %d\n", code)
 
 	return nil
+}
+
+// getOSMounts provides a mount for os-specific files such
+// as the hosts file and resolv.conf
+func getOSMounts() []specs.Mount {
+	// Prior to hosts_dir env-var, this value was set to
+	workingDir, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("fail to get wd")
+	}
+	hostsDir := "/etc"
+	if v, ok := os.LookupEnv("hosts_dir"); ok && len(v) > 0 {
+		hostsDir = v
+	}
+
+	mounts := []specs.Mount{}
+	mounts = append(mounts, specs.Mount{
+		Destination: "/etc/resolv.conf",
+		Type:        "bind",
+		Source:      path.Join(workingDir, "resolv.conf"),
+		Options:     []string{"rbind", "ro"},
+	})
+
+	mounts = append(mounts, specs.Mount{
+		Destination: "/etc/hosts",
+		Type:        "bind",
+		Source:      path.Join(hostsDir, "hosts"),
+		Options:     []string{"rbind", "ro"},
+	})
+	return mounts
 }
