@@ -7,7 +7,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bithavoc/test-containerd/cninetwork"
 	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/cio"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/namespaces"
@@ -21,6 +23,11 @@ func main() {
 }
 
 func redisExample() error {
+	cni, err := cninetwork.InitNetwork()
+	if err != nil {
+		return fmt.Errorf("failed to init cni, %w", err)
+	}
+	log.Printf("CNI initialized")
 	// create a new client connected to the default socket path for containerd
 	client, err := containerd.New("/run/containerd/containerd.sock")
 	if err != nil {
@@ -68,11 +75,15 @@ func redisExample() error {
 		log.Printf("deleting container")
 		client.ContainerService().Delete(ctx, containerName)
 	}
+	snapshooter := ""
+	snapshotName := containerName + "-snapshot"
+	client.SnapshotService(snapshooter).Remove(ctx, snapshotName)
 	container, err := client.NewContainer(
 		ctx,
 		containerName,
 		containerd.WithImage(image),
-		containerd.WithNewSnapshot("ubuntu-server-snapshot2", image),
+		containerd.WithSnapshotter(snapshooter),
+		containerd.WithNewSnapshot(snapshotName, image),
 		containerd.WithNewSpec(
 			oci.WithImageConfig(image),
 			oci.WithMemoryLimit(((1024*1024)*4)),
@@ -85,12 +96,29 @@ func redisExample() error {
 	defer container.Delete(ctx, containerd.WithSnapshotCleanup)
 
 	// create a task from the container
+	client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
+		ContainerID: container.ID(),
+	})
 	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStdio))
 	if err != nil {
 		return fmt.Errorf("failed to create new task, %w", err)
 	}
 	defer task.Delete(ctx)
 	// metrics, err := task.Metrics(ctx)
+
+	labels := map[string]string{}
+	_, err = cninetwork.CreateCNINetwork(ctx, cni, task, labels)
+
+	if err != nil {
+		return err
+	}
+
+	ip, err := cninetwork.GetIPAddress(containerName, task.Pid())
+	if err != nil {
+		return err
+	}
+
+	log.Printf("%s has IP: %s.\n", containerName, ip)
 
 	// make sure we wait before calling start
 	exitStatusC, err := task.Wait(ctx)
