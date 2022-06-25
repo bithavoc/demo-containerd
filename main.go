@@ -8,7 +8,7 @@ import (
 	"path"
 	"syscall"
 
-	"github.com/bithavoc/test-containerd/cninetwork"
+	"github.com/bithavoc/demo-containerd/cninetwork"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/cio"
