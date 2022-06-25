@@ -1,5 +1,7 @@
 package cninetwork
 
+// copy from faasd https://github.com/openfaas/faasd/blob/e668beef139ee094ad7364a5534b15d84b1b1f6d/pkg/cninetwork/cni_network.go
+
 import (
 	"bufio"
 	"context"

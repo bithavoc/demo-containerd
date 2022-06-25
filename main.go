@@ -7,7 +7,6 @@ import (
 	"os"
 	"path"
 	"syscall"
-	"time"
 
 	"github.com/bithavoc/test-containerd/cninetwork"
 	"github.com/containerd/containerd"
@@ -20,12 +19,13 @@ import (
 )
 
 func main() {
-	if err := redisExample(); err != nil {
+	command := "apt update && apt-get dist-upgrade -y && apt-get install iputils-ping -y && ping -c 5 google.com && echo 'container finishing'"
+	if err := run(command); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func redisExample() error {
+func run(command string) error {
 	cni, err := cninetwork.InitNetwork()
 	if err != nil {
 		return fmt.Errorf("failed to init cni, %w", err)
@@ -38,10 +38,9 @@ func redisExample() error {
 	}
 	defer client.Close()
 
-	// create a new context with an "example" namespace
 	ctx := namespaces.WithNamespace(context.Background(), "default")
 
-	// pull the redis image from DockerHub
+	// pull image from DockerHub
 	image, err := client.Pull(ctx, "docker.io/library/ubuntu:latest", containerd.WithPullUnpack)
 	if err != nil {
 		return err
@@ -50,22 +49,10 @@ func redisExample() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("images before")
+	log.Printf("images found: %d", len(images))
 	for _, img := range images {
 		log.Printf("Image %s", img.Name())
 	}
-	// if err := client.ImageService().Delete(ctx, "docker.io/library/redis:alpine"); err != nil {
-	// 	return err
-	// }
-	// log.Printf("images after delete")
-	images, err = client.ListImages(ctx)
-	if err != nil {
-		return err
-	}
-	for _, img := range images {
-		log.Printf("Image %s", img.Name())
-	}
-	//  client.ContentStore().ListStatuses()
 
 	// create a container
 	containerName := "ubuntu-server2"
@@ -94,24 +81,34 @@ func redisExample() error {
 			oci.WithImageConfig(image),
 			oci.WithMounts(mounts),
 			oci.WithMemoryLimit(((1024*1024)*80)),
-			oci.WithProcessArgs("sh", "-c", "apt update && apt-get dist-upgrade -y"),
+			oci.WithProcessArgs("sh", "-c", command),
 		),
 	)
 	if err != nil {
 		return err
 	}
 	defer container.Delete(ctx, containerd.WithSnapshotCleanup)
+	taskSvc := client.TaskService()
+
+	if task, err := container.Task(ctx, nil); err != nil {
+		if !errdefs.IsNotFound(err) {
+			return fmt.Errorf("failed to grab existing container task, %w", err)
+		}
+	} else {
+		task.Kill(ctx, syscall.SIGKILL)
+		if _, err := taskSvc.Delete(ctx, &tasks.DeleteTaskRequest{
+			ContainerID: container.ID(),
+		}); err != nil {
+			return fmt.Errorf("failed to delete task, %w", err)
+		}
+	}
 
 	// create a task from the container
-	client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
-		ContainerID: container.ID(),
-	})
 	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStdio))
 	if err != nil {
 		return fmt.Errorf("failed to create new task, %w", err)
 	}
 	defer task.Delete(ctx)
-	// metrics, err := task.Metrics(ctx)
 
 	labels := map[string]string{}
 	_, err = cninetwork.CreateCNINetwork(ctx, cni, task, labels)
@@ -138,17 +135,17 @@ func redisExample() error {
 		return fmt.Errorf("failed to start task, %w", err)
 	}
 
-	go func() {
-		// sleep for a lil bit to see the logs
-		time.Sleep(10 * time.Second)
-		log.Printf("killing process")
+	// go func() {
+	// 	// sleep for a lil bit to see the logs
+	// 	time.Sleep(10 * time.Second)
+	// 	log.Printf("killing process")
 
-		// kill the process and get the exit status
-		if err := task.Kill(ctx, syscall.SIGTERM); err != nil {
-			st, serr := task.Status(ctx)
-			log.Printf("kill failed, %s, exit status=%s(%v), err %v", err.Error(), st.Status, st.ExitStatus, serr)
-		}
-	}()
+	// 	// kill the process and get the exit status
+	// 	if err := task.Kill(ctx, syscall.SIGTERM); err != nil {
+	// 		st, serr := task.Status(ctx)
+	// 		log.Printf("kill failed, %s, exit status=%s(%v), err %v", err.Error(), st.Status, st.ExitStatus, serr)
+	// 	}
+	// }()
 	// wait for the process to fully exit and print out the exit status
 
 	status := <-exitStatusC
@@ -156,7 +153,7 @@ func redisExample() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("redis-server exited with status: %d\n", code)
+	fmt.Printf("container exited with status: %d\n", code)
 
 	return nil
 }
